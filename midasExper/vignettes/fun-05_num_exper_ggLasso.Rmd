@@ -1,0 +1,295 @@
+---
+title: "fun-05_num_exper_ggLasso"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{fun-05_num_exper_ggLasso}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+```{r setup}
+library(rstan)
+library(dplyr)
+parallel::detectCores()
+options(mc.cores = 4)
+```
+
+# Create Data
+```{r}
+## data generating process
+## 5 relevant features
+## 5 irrelevant features
+## all monthly
+## created by same AR(1) process
+## freq = 3, lag = 12
+## 3 different beta polynomials
+
+## goal: MSE reduction, get weights
+## testing: u-res midas, gglasso, adaptive-group, adaptive-group_ss
+## testing: plus 3 new ones
+
+## generate correlation matrix
+nY <- 500
+nK <- 30
+nFreq <- 3
+nLag <- 12
+nMu <- 0.2
+vRho <- c(0.6)
+.sSeed = 1234
+
+sTrain <- 450
+
+nPolyDegree <- 3
+mQ <- dgp_lag_matrix(nPolyDegree, 12, .bEndpoint = FALSE)
+mQ <- dgp_lag_matrix_legendre(nPolyDegree, 0, 1, 12)
+
+gSize <- c(rep(nPolyDegree+1, nK))
+sGroup <- rep(1:nK, gSize)
+
+pInd <- c(1, 1, 1, 2, 2, 2, 3, 3, 3, sample(1:3, 21, replace = T)); length(pInd)
+vBeta <- c(1.2, -0.5, 3, 1.1, 0.5, -2.5, -1.5, 0.8, 3.5, rep(0, 21)); length(vBeta)
+trueBeta <- paste0("Beta_", 1:9)
+
+mCorr <- dgp_correl_matrix(nK, 1, 0.3, 0)
+
+mX <- dgp_pred_create(nY, nK, nFreq, nLag, mCorr, nMu, vRho, .sSeed = .sSeed)
+lX <- dgp_pred_align(nY, mX, nFreq, nLag)
+
+## data prep for bayes model
+dfDataX <- do.call("cbind", lapply(lX, function(x, mQ) {x %*% t(mQ)}, mQ = mQ))
+
+b1 <- dgp_pred_beta_lag(nLag, 1, 3)
+b2 <- dgp_pred_beta_lag(nLag, 2, 3)
+b3 <- dgp_pred_beta_lag(nLag, 2, 2)
+
+lB <- list(b1, b2, b3)
+
+maPredictor <- matrix(nrow = nY, ncol = nK)
+for (i in 1:length(lX)) {
+  nPoly <- lB[[pInd[i]]]
+  maPredictor[, i] <- lX[[i]] %*% nPoly
+}
+
+mY <- maPredictor %*% vBeta + rnorm(nY)
+```
+
+## split into test and train
+```{r}
+indTest <- (sTrain + 1):nY
+mX_test <- mX[indTest, ]
+lX_test <- lapply(lX, function(x)x[indTest, ])
+maPredictor_test <- maPredictor[indTest, ]
+dfDataX_test <- dfDataX[indTest, ]
+mY_test <- mY[indTest, , drop = FALSE]
+
+
+maPredictor <- maPredictor[-indTest, ]
+mX <- mX[-indTest, ]
+lX <- lapply(lX, function(x)x[-indTest, ])
+dfDataX <- dfDataX[-indTest, ]
+mY <- mY[-indTest, , drop = FALSE]
+```
+
+
+
+
+## Check data with linear regression
+
+### with known polynomial structure
+```{r}
+dfNew <- cbind(mY, maPredictor)
+dfNew <- as.data.frame(dfNew)
+colnames(dfNew)[1] <- "y"
+m1 <- lm(y ~ . - 1, data = dfNew)
+summary(m1)
+```
+
+### unknown lag polynomial
+
+```{r}
+dfNew2 <- cbind(mY, dfDataX)
+dfNew2 <- as.data.frame(dfNew2)
+colnames(dfNew2)[1] <- "y"
+m2 <- lm(y ~ . -1, data = dfNew2)
+summary(m2)
+
+## obtaining the beta coefficient
+vBeta_est <- m2$coefficients
+maCoef <- matrix(0, nrow = nK, ncol = 1)
+vInd <- c(seq(1, ncol(dfDataX), 4), ncol(dfDataX) + 1)
+for (i in 1:nK) {
+  maCoef[i, ] <- sum(vBeta_est[vInd[i]:(vInd[i+1] - 1)] %*% mQ)
+}
+
+## try to get almon weights
+b1
+i <- 1
+sW <- vBeta_est[vInd[i]:(vInd[i+1] - 1)] %*% mQ
+sA <- sW / sum(sW)
+plot(sA[1, ])
+lines(b1)
+
+b2
+i <- 4
+sW <- vBeta_est[vInd[i]:(vInd[i+1] - 1)] %*% mQ
+sA <- sW / sum(sW)
+plot(sA[1, ])
+lines(b2)
+
+b3
+i <- 8
+sW <- vBeta_est[vInd[i]:(vInd[i+1] - 1)] %*% mQ
+sA <- sW / sum(sW)
+plot(sA[1, ])
+lines(b3)
+```
+
+
+# Sparse-Group Lasso
+
+```{r}
+lData_sgl <- list("x" = dfDataX, "y" = mY)
+lData_sgl$x <- scale(lData_sgl$x)
+lData_sgl$y <- scale(lData_sgl$y, center = T, scale = F)
+md_sgLasso = SGL::SGL(lData_sgl, sGroup, type = "linear", standardize = F)
+
+vBeta_sgl <- md_sgLasso$beta[, 20]
+vBeta_sgl <- vBeta_sgl/apply(dfDataX, 2, sd)
+maCoef_sgl <- matrix(0, nrow = nK, ncol = 1)
+vInd <- c(seq(1, ncol(dfDataX), 4), ncol(dfDataX) + 1)
+for (i in 1:nK) {
+  maCoef_sgl[i, ] <- sum(vBeta_sgl[vInd[i]:(vInd[i+1] - 1)] %*% mQ)
+}
+```
+
+
+# Stan Models
+
+```{r}
+## prepare data
+mY_scale <- scale(mY, center = T, scale = F)
+dfDataX_scale <- scale(dfDataX, center = T, scale = T)
+
+lData_stan_raw <- list(
+  nY = nrow(mY_scale),
+  nZ = ncol(dfDataX_scale),
+  nG = nK,
+  y = as.vector(mY_scale),
+  x = dfDataX_scale,
+  gSize = gSize,
+  gInd = sGroup,
+  pr_sigma = c(2, 0.1),
+  pr_lambda = c(2, 0.1)
+)
+```
+
+```{r}
+md_base_midas <- midas_model$new(lData_stan_raw, mQ)
+nInterAll <- 2000
+
+## adaptive group lasso
+md_base_midas$fit_stan(sFile = here::here("inst/stan/adaptive_group_lasso.stan"), sName = "group_lasso", nIter = nInterAll)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/adaptive_group_lasso.rds"))
+md_base_midas$create_plot()
+
+md_gLasso <- md_base_midas$clone()
+# x11(); md_gLasso$plot_areas
+# x11(); md_gLasso$plot_dens
+
+## adaptive group lasso s&s
+md_base_midas$fit_stan(sFile = here::here("inst/stan/adaptive_group_lasso_ss.stan"), sName = "group_lasso_ss", nIter = nInterAll)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/adaptive_group_lasso_ss.rds"))
+md_base_midas$create_plot()
+
+md_gLasso_ss <- md_base_midas$clone()
+# x11(); md_gLasso_ss$plot_areas
+# x11(); md_horseshoe_plus$plot_intervals
+# x11(); md_gLasso_ss$plot_dens
+# x11(); md_gLasso_ss$plot_hist
+# md_gLasso_ss$summary_beta
+
+
+## hierarchical group lasso
+md_base_midas$fit_stan(sFile = here::here("inst/stan/group_lasso_hierarchical.stan"), sName = "group_lasso_hierarchical", nIter = nInterAll)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/group_lasso_hierarchical.rds"))
+md_base_midas$create_plot()
+
+md_hierarchical_group <- md_base_midas$clone()
+# x11(); md_hierarchical_group$plot_areas
+
+## horseshoe group
+md_base_midas$fit_stan(sFile = here::here("inst/stan/horseshoe_group.stan"), sName = "group_horseshoe", nIter = nInterAll)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/horseshoe_group.rds"))
+md_base_midas$create_plot()
+
+md_horseshoe <- md_base_midas$clone()
+# x11(); md_horseshoe$plot_areas
+
+## horseshoe+ group
+md_base_midas$fit_stan(sFile = here::here("inst/stan/horseshoe_group_plus.stan"), sName = "group_horseshoe_plus", nIter = nInterAll)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/horseshoe_group_plus.rds"))
+md_base_midas$create_plot()
+
+md_horseshoe_plus <- md_base_midas$clone()
+# x11(); md_horseshoe_plus$plot_areas
+# x11(); md_horseshoe_plus$plot_intervals
+# x11(); md_horseshoe_plus$plot_dens
+```
+
+# Results
+
+```{r}
+lModels <- 
+  list(
+    "ad_group_lasso" = md_gLasso,
+    "ad_group_lasso_ss" = md_gLasso_ss,
+    "hier_group_lasso" = md_hierarchical_group,
+    "horseshoe" = md_horseshoe,
+    "horseshoe_plus" = md_horseshoe_plus
+  )
+```
+
+## Prediction
+
+```{r}
+## shared data
+xTest_scale <- scale(dfDataX_test, center = T, scale = T)
+
+nTestOut <- pred_new_response_wrapper(xTest_scale, md_gLasso_ss)
+
+nTestOut <- SGL::predictSGL(md_sgLasso, xTest_scale, 20)
+pred_new_mse(mY_test, nTestOut)
+
+sum((nTestOut - mY_test)^2) / length(mY_test)
+```
+
+
+
+## TPR, FPR
+
+```{r}
+trueBeta
+check_tpr(dfInput = md_gLasso_ss$beta_coef, sTrueBeta = trueBeta)
+check_mse(dfInput = md_gLasso_ss$beta_coef, vTrueBeta = vBeta)
+```
+
+
+## Forecasting MSE
+
+  
+
+## Plots for Coefficient
+
+```{r}
+
+    
+```
+

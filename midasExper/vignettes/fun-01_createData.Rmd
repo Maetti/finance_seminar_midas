@@ -1,0 +1,862 @@
+---
+title: "fun-01_createData"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{fun-01_createData}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+
+```{r}
+#' Create the Correlation Matrix
+#' This will create the correlation matrix with a special structure
+#'
+#' @param vBlock 
+#' @param nVar 
+#' @param nWithin 
+#' @param vBetween 
+#' @param nSeed 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_correl_matrix <- function(vBlock, nVar, nWithin, nBetween) {
+  
+  mOut <- matrix(data = nBetween, nrow = sum(vBlock), ncol = sum(vBlock))
+  sStart <- c(0, cumsum(vBlock))
+  
+  for (i in seq_along(vBlock)) {
+    s1 <- sStart[i] + 1
+    e1 <- sStart[i+1]
+    
+    mOut[s1:e1, s1:e1] <- nWithin
+    
+  }
+  
+  diag(mOut) <- nVar
+  
+  mOut
+  
+}
+
+
+
+#' Title
+#'
+#' @param nY 
+#' @param nMu 
+#' @param nK 
+#' @param nFreq 
+#' @param nLag 
+#' @param maError 
+#' @param vRho 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_pred_create <- function(nY, nK, nFreq, nLag, mCorr, nMu, vRho, .sSeed = 1245, .bRandom = FALSE) {
+  
+  nX <- nY * nFreq * 2 + nLag
+  
+  maX <- matrix(runif(nX), nrow = nX, ncol = nK, byrow = T)
+  
+  if (.bRandom) {
+    
+    maX <- matrix(rnorm(nX), nrow = nX, ncol = nK, byrow = T)
+
+  } else {
+    nAR <- length(vRho)
+    
+    set.seed(.sSeed)
+    mEps <- MASS::mvrnorm(nX, rep(0, nK), mCorr)
+    
+    for (i in 1:(nX - nAR)) {
+      maX[i + nAR, ] <- nMu + colSums(vRho * maX[i:(i + nAR - 1), , drop = FALSE]) + mEps[i + nAR, ]
+    }
+    
+    maX <-maX[(nX - (nY * nFreq + nLag)):nX, ]
+    
+  }
+  
+  maX
+  
+}
+
+
+#' Title
+#'
+#' @param nY 
+#' @param mX 
+#' @param nFreq 
+#' @param nLag 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_pred_align <- function(nY, mX, nFreq, nLag) {
+  
+  nK <- ncol(mX)
+  nX <- nrow(mX)
+  
+  lOut <- vector("list", nK)
+  
+  
+  for (i in 1:nK) {
+    
+    vX <- mX[, i]
+    vStart <- seq(nLag, nX, nFreq)[1:nY]
+    mNew <- matrix(nrow = nY, ncol = nLag)
+    
+    for (j in seq_along(vStart)) {
+      mNew[j, ] <- rev(vX[(vStart[j] - nLag + 1):vStart[j]])
+    }
+    
+    lOut[[i]] <- mNew
+    
+  }
+  
+  lOut
+  
+}
+
+
+#' Title
+#'
+#' @param nLag 
+#' @param nT1 
+#' @param nT2 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_exp_almon_lag <- function(nLag, nT1, nT2) {
+  vLag <- 1:nLag
+  vPoly <- exp(nT1 * vLag + nT2 * vLag^2)
+  vPoly / sum(vPoly)
+}
+
+#' Title
+#'
+#' @param nLag 
+#' @param nT1 
+#' @param nT2 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_pred_beta_lag <- function(nLag, nT1, nT2){
+  vPoly <- seq(0, 1, length.out = nLag)
+  vPoly <- vPoly^(nT1 - 1) * (1 - vPoly)^(nT2 - 1)
+  vPoly / sum(vPoly)
+}
+
+#' Title
+#'
+#' @param mX 
+#' @param nLag 
+#' @param nT1 
+#' @param nT2 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_pred_exp_almon <- function(mX, nLag, nT1, nT2, .sPoly = "almon") {
+  
+  sPoly <- match.arg(.sPoly, choices = c("almon", "beta"))
+  
+  if (sPoly == "almon") {
+    vLagPoly <- dgp_exp_almon_lag(nLag, nT1, nT2)
+  } else if (sPoly == "beta") {
+    vLagPoly <- dgp_pred_beta_lag(nLag, nT1, nT2)
+  }
+  
+  mX %*% vLagPoly
+}
+
+
+
+
+#' Title
+#'
+#' @param lX 
+#' @param nLag 
+#' @param nT1 
+#' @param nT2 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_pred_all_weighted <- function(nY, lX, nLag, nT1, nT2, .sPoly = "almon") {
+  
+  mNew <- matrix(nrow = nY, ncol = length(lX))
+  
+  for (i in seq_along(lX)) {
+    mNew[, i] <- dgp_pred_exp_almon(lX[[i]], nLag, nT1, nT2, .sPoly)
+  }
+  
+  mNew
+}
+```
+
+
+```{r}
+#' Title
+#'
+#' @param nY 
+#' @param nK 
+#' @param nFreq 
+#' @param nLag 
+#' @param nMu 
+#' @param vRho 
+#' @param vBlock 
+#' @param nVar 
+#' @param nWithin 
+#' @param nBetween 
+#' @param nT1 
+#' @param nT2 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_prep_wrapper <- function(nY = 200, nK = 70, 
+                              nFreq = 3, nLag = 6, 
+                              nMu = 0.5, vRho = c(0.9), 
+                              vBlock = c(30, 20, 20), nVar = 1, nWithin = 0.5, nBetween = 0.2, 
+                              nT1 = 0.0005, nT2 = -0.00007, .sSeed) {
+  
+  
+  ## generate correlation matrix
+  mCorr <- dgp_correl_matrix(vBlock, nVar, nWithin, nBetween)
+  
+  mX <- dgp_pred_create(nY, nK, nFreq, nLag, mCorr, nMu, vRho, .sSeed = .sSeed)
+  
+  lX <- dgp_pred_align(nY, mX, nFreq, nLag)
+  
+  mNew <- dgp_pred_all_weighted(nY, lX, nLag, nT1, nT2)
+  
+  mNew
+}
+
+#' Title
+#'
+#' @param mX 
+#' @param vBeta 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_prep_Y <- function(mX, vBeta) {
+  vBeta %*% mX
+}
+```
+
+
+```{r}
+#' Title
+#'
+#' @param nY 
+#' @param vK 
+#' @param vFreq 
+#' @param vLag 
+#' @param nMu 
+#' @param vRho 
+#' @param nVar 
+#' @param nWithin 
+#' @param nBetween 
+#' @param nT1 
+#' @param nT2 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_create_full <- function(nY, vBeta, 
+                            vK = c(40, 30, 30), lBlock = list(c(15, 15, 10), c(10, 10, 10), c(15, 15)), vFreq = c(3, 12, 90), vLag = c(6, 12, 25),
+                            nBlockNames = c("m", "w", "d"),
+                            nMu = 0.5, lRho = list(c(0.5), c(0.7), c(0.9)),
+                            nVar = 1, nWithin = 0.5, nBetween = 0.2,
+                            nT1 = 0.0005, nT2 = -0.00007, .sPoly = "almon", .sSeed, .bRandom = FALSE) {
+  
+  
+  ## create data
+  lpredX_align <- lpredX_raw <- vector("list", length = length(vK))
+  lpredX <- vector("list", length = length(vK))
+  # lBlock <- list(c(15, 15, 10), c(10, 10, 10), c(15, 15))
+  
+  for (i in seq_along(vK)) {
+    # lpredX[[i]] <- dgp_prep_wrapper(nY, nK = vK[i], 
+    #                                 nFreq = vFreq[i], nLag = vLag[i], nMu = 0.5, vRho = lRho[[i]], 
+    #                                 vBlock = lBlock[[i]], nVar = nVar, nWithin = nWithin, nBetween = nBetween, 
+    #                                 nT1, nT2, .sSeed)
+    
+    ## generate correlation matrix
+    mCorr <- dgp_correl_matrix(lBlock[[i]], nVar, nWithin, nBetween)
+    
+    lpredX_raw[[i]] <- dgp_pred_create(nY, vK[i], vFreq[i], vLag[i], mCorr, nMu, lRho[[i]], .sSeed = .sSeed, .bRandom = .bRandom)
+    
+    lpredX_align[[i]] <- dgp_pred_align(nY, lpredX_raw[[i]], vFreq[i], vLag[i])
+    
+    lpredX[[i]] <- dgp_pred_all_weighted(nY, lpredX_align[[i]], vLag[i], nT1, nT2, .sPoly)
+    
+  }
+  
+  mPredX <- do.call("cbind", lpredX)
+  
+  names(lpredX_raw) <- nBlockNames
+  
+  nY <- mPredX %*% vBeta + rnorm(nY)
+  
+  list(
+    "y" = nY,
+    "x" = mPredX,
+    "x_raw" = lpredX_raw,
+    "x_align" = lpredX_align
+  )
+}
+```
+
+
+```{r}
+vBeta_m <- c(0.8, 2.1, rep(0, 13), -1.4, 0.5, rep(0, 13), 3.1, -1, rep(0, 8))
+vBeta_w <- c(1.1, 0.3, rep(0, 8), -0.5, rep(0, 9), 2.3, rep(0, 9))
+vBeta_d <- c(2.5, -2.1, rep(0, 13), 1.1, -2.4, rep(0, 13))
+
+vBeta <- c(vBeta_m, vBeta_w, vBeta_d)
+
+lTest <- dgp_create_full(nY = 200, vBeta, .sSeed = 1234)
+```
+
+```{r}
+vBeta <- c(0, 0.3, 0.5, 0, 0.3, 0.5, 0, 0, 0.8, rep(0, 21))
+
+lTest_paper <- dgp_create_full(nY = 200, vBeta, 
+                              vK = c(30), lBlock = list(c(30)), vFreq = 3, vLag = 24, nBlockNames = "m",
+                              nMu = 0.1, lRho = list(c(0.5)), 
+                              nVar = 1, nWithin = 0.5, nBetween = 0,
+                              nT1 = 0.0005, nT2 = -0.00007,
+                              .sSeed = 1234)
+```
+
+
+
+```{r}
+#' Title
+#'
+#' @param nP 
+#' @param nLag 
+#' @param .bEndpoint 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_lag_matrix <- function(nP, nLag, .bEndpoint = FALSE) {
+  
+  if (.bEndpoint) {
+    
+    mQ <- matrix(1, nrow = 2, ncol = nLag)
+    
+    for (i in 1:2) {
+      # mQ[i, ] <- i * (nLag - 1)^(i + 1) - (i + 1) * (nLag - 1)^(i) + (0:(nLag-1))^(i + 1)
+      mQ[i, ] <- i * (nLag - 1)^(i + 1) - (i + 1) * (nLag - 1)^(i) + (0:(nLag-1))^(i + 1)
+      
+    }
+    # mQ[1, 1] <- (nLag-1)^2
+    # mQ[1, 2] <- 5^2 + 1 - 2 * 5
+    # mQ[1, 3] <- 5^2 + 2^2 - 2 * 5
+    # mQ[1, 4] <- 5^2 + 3^2 - 2 * 5
+    # mQ[1, 5] <- 5^2 + 4^2 - 2 * 5
+    # mQ[1, 6] <- 5^2 + 5^2 - 2 * 5^2
+    
+    mQ[, 1] <- c((nLag-1)^2, 2 * (nLag-1)^3)
+    mQ[, nLag] <- 0
+    
+  } else {
+    
+    mQ <- matrix(1, nrow = nP + 1, ncol = nLag)
+    
+    for (i in 1:nP) {
+      mQ[i + 1, ] <- (0:(nLag-1))^i
+    }
+      
+  }
+  
+  mQ
+  
+}
+
+
+#' Title
+#'
+#' @param degree 
+#' @param a 
+#' @param b 
+#' @param jmax 
+#' @param X 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_lag_matrix_legendre <- function(degree,a=0,b=1,jmax){
+  # Notes:
+  #   References:
+  #   H. J. Weber, G. B. Arfken, Essential Mathematical Methods for Physicists,
+  #   Elsevier Academic Press, San Diego, USA, 2004.
+  #   Translated from matlab function lb to R. 2019-03-01, Jonas Striaukas (jonas.striaukas@gmail.com)
+  X <- seq(0,1,length.out=jmax)
+  n <- length(X)
+  P <- matrix(1,nrow=n,ncol=degree+2)
+  Psi <- matrix(1,nrow=n,ncol=degree+1)/ sqrt(b-a)
+  P[, 2] <-  2*X/(b-a) - ((b+a)/(b-a))
+  if(degree>0){
+    for (i in 1:degree){
+      P[, i+2]   <- ((2*i+1)/(i+1)) * P[, 2]*P[, i+1] - i/(i+1) * P[, i]
+      Psi[, i+1] <- sqrt((2*i + 1) / (b-a)) %*% P[, i+1]
+    }
+  }
+  t(Psi)
+}
+
+#' Title
+#'
+#' @param mX 
+#' @param nP 
+#' @param nLag 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_create_urest_almon <- function(mX, nP, nLag, .LagMatrix = "almon", .bEndpoint = FALSE) {
+  
+  sLagMatrix <- match.arg(.LagMatrix, c("almon", "legendre"))
+  
+  if (sLagMatrix == "almon") {
+    mQ <- dgp_lag_matrix(nP, nLag, .bEndpoint)
+  } else if(sLagMatrix == "legendre") {
+    mQ <- dgp_lag_matrix_legendre(nP, 0, 1, nLag)
+  }
+  
+  mX %*% t(mQ)
+  # t(mQ %*% t(mX))
+
+}
+
+
+# dgp_create_urest_almon(mX, 2, 6)
+
+
+#' Title
+#'
+#' @param lAlign 
+#' @param vLag 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+dgp_create_model_input <- function(lAlign, vLag = c(6, 12, 25), vP = c(2, 4, 6), .sPolyMatrix = "almon", .bEndpoint = FALSE) {
+  
+  lOut <- vector("list", length(lAlign))
+  
+  if (!(.bEndpoint)) {
+      for (i in seq_along(lAlign)) {
+        lOut[[i]] <- lapply(lAlign[[i]], dgp_create_urest_almon, vP[[i]], vLag[[i]], .sPolyMatrix)
+        lOut[[i]] <- do.call("cbind", lOut[[i]])
+      }
+  } else {
+      for (i in seq_along(lAlign)) {
+        lOut[[i]] <- lapply(lAlign[[i]], dgp_create_urest_almon, vP[[i]], vLag[[i]], .bEndpoint)
+        lOut[[i]] <- do.call("cbind", lOut[[i]])
+    }
+  }
+  
+  lOut
+}
+```
+
+
+
+```{r}
+#' Title
+#'
+#' @param dfTheta_sim 
+#' @param gSize 
+#' @param nLag 
+#' @param nP 
+#' @param .bEndpoint 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+md_extract_beta_coef_test <- function(vBeta_est, gSize, nLag = c(6), nP = c(2), .bEndpoint = FALSE) {
+  
+  mQ <- dgp_lag_matrix(nP, nLag, .bEndpoint) 
+  
+  maOut <- matrix(0, nrow = length(gSize), ncol = 1)
+  vInd <- cumsum(gSize)
+  
+  for (i in seq_along(gSize)) {
+    maOut[i, ] <- sum(vBeta_est[c((vInd[i] - (gSize[i] - 1)):vInd[i])] %*% mQ)
+  }
+  
+  maOut
+  
+}
+#' Title
+#'
+#' @return
+#' @export
+#'
+#' @examples
+md_extract_beta_coef <- function(dfTheta_sim, gSize, nLag = c(24), nP = c(2), .bEndpoint = FALSE) {
+  
+  mQ <- dgp_lag_matrix(nP, nLag, .bEndpoint) 
+  
+  maOut <- matrix(0, nrow = nrow(dfTheta_sim), ncol = length(gSize))
+  vInd <- cumsum(gSize)
+  
+  for (i in seq_along(gSize)) {
+    maOut[, i] <- apply(dfTheta_sim[, c(vInd[i] - 1, vInd[i])], 1, function(x, mQ) {rowSums(x %*% mQ)}, mQ = mQ)
+  }
+  
+}
+```
+
+
+# Analyzing
+```{r}
+#' Title
+#'
+#' @param maInput 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+check_summary = function(maInput) {
+    
+    sColNames <- factor(colnames(maInput), levels = colnames(maInput))
+    
+    maInput %>% 
+      as.data.frame() %>% 
+      tidyr::pivot_longer(values_to = "val", names_to = "input", cols = 1:ncol(.)) %>% 
+      dplyr::mutate(input = factor(input, levels = colnames(maInput))) %>% 
+      dplyr::group_by(input) %>% 
+      dplyr::summarise(
+        amount = dplyr::n(),
+        mean = mean(val),
+        se_mean = sd(val) / amount,
+        sd = sd(val),
+        p_0.025 = quantile(val, probs = 0.025),
+        p_0.25 = quantile(val, probs = 0.25),
+        p_0.5 = quantile(val, probs = 0.5),
+        p_0.75 = quantile(val, probs = 0.75),
+        p_0.975 = quantile(val, probs = 0.975)
+      ) %>% 
+      dplyr::select(-amount)
+    
+}
+#' Title
+#'
+#' @param dfInput 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+check_tpr <- function(dfInput, sTrueBeta, vTF = c(9, 21)) {
+  
+  dfBeta <- check_summary(dfInput)
+
+  estBeta <-
+    dfBeta %>% 
+      dplyr::filter(!c(p_0.025 < 0 & p_0.975 > 0)) %>% 
+      dplyr::pull(input)
+  
+  tpr <- sum(estBeta %in% sTrueBeta) / vTF[1]
+  fpr <- sum(!(estBeta %in% sTrueBeta)) / vTF[2]
+  
+  data.frame(
+    "tpr" = tpr,
+    "fpr" = fpr
+  )
+}
+
+#' Title
+#'
+#' @param dfInput 
+#' @param vTrueBeta 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+check_mse <- function(dfInput, vTrueBeta) {
+  
+  vMean <- apply(dfInput, 2, mean)
+  nVar <- (1 / (nrow(dfInput) * ncol(dfInput))) * sum(t(t(dfInput) - vMean)^2)
+  nBias <- (1/ncol(dfInput)) * sum((vMean - vBeta)^2)
+  
+  data.frame(
+    "mse" = nVar + nBias,
+    "var" = nVar,
+    "bias_2" = nBias
+  )
+  
+}
+```
+
+
+# Prediction Error
+```{r}
+#' Title
+#'
+#' @param xTest_scale 
+#' @param md_stan_obj 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+pred_new_response_wrapper <- function(xTest_scale, md_stan_obj) {
+  
+  ## model specific
+  mTheta <- md_stan_obj$list_of_draws$theta
+  nSigma_2 <- md_stan_obj$list_of_draws$sigma_2
+  
+  ## select theta
+  mTheta <- as.data.frame(mTheta)
+  colnames(mTheta) <- paste0("theta_", 1:ncol(mTheta))
+  sInd <- 
+    check_summary(mTheta) %>% 
+      dplyr::filter(!(p_0.025 < 0 & p_0.975 > 0)) %>% 
+      dplyr::pull(input)
+  
+  sInd <- match(sInd, colnames(mTheta))
+  
+  mTheta <- as.matrix(mTheta[, sInd])
+  xTest_scale <- xTest_scale[, sInd]
+  
+  
+  mY_pred <- pred_new_response_bayes(xTest_scale, mTheta, nSigma_2)
+  
+  mY_pred
+  
+}
+#' Title
+#'
+#' @param dfX 
+#' @param mTheta 
+#' @param nSigma_2 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+pred_new_response_bayes <- function(dfX, mTheta, nSigma_2) {
+  
+  mYnew <- matrix(nrow = length(nSigma_2), ncol = nrow(dfX))
+  
+  for (i in 1:nrow(dfX)) {
+    for (j in 1:length(nSigma_2)) {
+      mYnew[j, i] <- rnorm(1, mTheta[j, ] %*% dfX[i, ], nSigma_2[j])
+    }
+  }
+  mYnew
+}
+#'
+#' @param nTrue_y 
+#' @param ma_predY 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+pred_new_mse <- function(nTrue_y, ma_predY) {
+  sum((apply(ma_predY, 2, mean) - nTrue_y)^2) / length(nTrue_y)
+}
+```
+
+
+# Stan Class
+```{r}
+midas_model <- R6::R6Class(classname = "bayes_midas", 
+  
+  public = list(
+    
+    ## data input
+    lData = NULL,
+    mQ = NULL,
+    
+    ## stan input
+    stan_model = NULL,
+    list_of_draws = NULL,
+    fit_summary = NULL,
+    
+    ## output
+    beta_coef = NULL,
+    lWeights = NULL,
+    unstdr_theta = NULL,
+    summary_beta = NULL,
+    summary_weight = NULL,
+    
+    ## plots
+    plot_intervals = NULL,
+    plot_areas = NULL,
+    plot_hist = NULL,
+    plot_dens = NULL,
+    
+    ## enter data
+    initialize = function(lData, mQ) {
+      self$lData <- lData
+      self$mQ <- mQ
+    },
+    
+    ## fit the model
+    fit_stan = function(sFile, sName, nIter = 2000, ...) {
+      
+      ## fit the stan model
+      obFit <- rstan::stan(file = sFile, model_name = sName, data = self$lData, iter = nIter, ...)
+      
+      ## extract usefull information
+      self$stan_model <- obFit
+      self$list_of_draws <- rstan::extract(obFit)
+      self$fit_summary <- summary(obFit)
+      
+      ## compute beta coefficient
+      cat("Computing Beta Coefficient")
+      
+      nX <- self$lData$nG
+      dfDataX <- self$lData$x
+      nP <- self$lData$gSize[[1]]
+      dfTheta_sim <- self$list_of_draws$theta
+      
+      ## unstandardized theat
+      sdX <- attr(dfDataX, "scaled:scale")
+      dfTheta_sim_unstd <- t(t(dfTheta_sim) / sdX)
+      
+      ## get weights and coefficient
+      lWeights <- vector("list", length = nX)
+      maWeigths <- matrix(0, nrow = nrow(dfTheta_sim), ncol = ncol(mQ))
+      maCoef <- matrix(0, nrow = nrow(dfTheta_sim), ncol = nX)
+      vInd <- c(seq(1, ncol(dfDataX), nP), ncol(dfDataX) + 1)
+      
+      for (i in 1:nX) {
+        vB <- dfTheta_sim_unstd[, vInd[i]:(vInd[i+1] - 1)]
+        maWeigths <- t(apply(vB, 1, function(x, mQ) {x %*% mQ}, mQ = mQ))
+        maCoef[, i] <- apply(maWeigths, 1, sum)
+        lWeights[[i]] <- maWeigths / maCoef[, i]
+        colnames(lWeights[[i]]) <- paste0("weight_", 1:ncol(mQ))
+      }
+      
+      
+      colnames(maCoef) <- paste0("Beta_", 1:nX)
+      names(lWeights) <- paste0("covariate_", 1:nX)
+
+      self$beta_coef <- maCoef
+      self$lWeights <- lWeights
+      self$unstdr_theta <- dfTheta_sim_unstd
+      
+      
+      ## summaries
+      self$summary_beta <- foo_summary(maCoef)
+      self$summary_weight <- lapply(lWeights, foo_summary)
+      names(self$summary_weight) <- names(lWeights)
+    },
+    
+    save_stan_fit = function(sPath) {
+      saveRDS(object = self$stan_model, file = sPath)
+    },
+    
+    foo_summary = function(maInput) {
+
+        sColNames <- factor(colnames(maInput), levels = colnames(maInput))
+        
+        maInput %>% 
+          as.data.frame() %>% 
+          tidyr::pivot_longer(values_to = "val", names_to = "input", cols = 1:ncol(.)) %>% 
+          dplyr::mutate(input = factor(input, levels = colnames(maInput))) %>% 
+          dplyr::group_by(input) %>% 
+          dplyr::summarise(
+            # amount = dplyr::n(),
+            mean = mean(val),
+            # se_mean = sd(val) / amount,
+            sd = sd(val),
+            p_0.025 = quantile(val, probs = 0.025),
+            p_0.25 = quantile(val, probs = 0.25),
+            p_0.5 = quantile(val, probs = 0.5),
+            p_0.75 = quantile(val, probs = 0.75),
+            p_0.975 = quantile(val, probs = 0.975)
+          ) %>% 
+          # dplyr::select(-amount) %>% 
+          force()
+        
+    },
+    
+    pred_new = function() {
+
+        mY_new <- gen_pred_y(xTest_scale, mTheta, nSigma_2)
+        colnames(mY_new) <- paste0("y_", 1:50)
+        
+        mY_new_summary <- 
+          foo_summary(mY_new) %>% 
+          dplyr::mutate(true_y = mY_test[, 1]) %>% 
+          dplyr::select(input, true_y, dplyr::everything())
+        
+        sum((mY_new_summary$true_y - mY_new_summary$mean)^2)/50
+        
+    },
+    
+    gen_pred_y = function(dfX, mTheta, nSigma_2) {
+  
+        mYnew <- matrix(nrow = length(nSigma_2), ncol = nrow(dfX))
+        
+        for (i in 1:nrow(dfX)) {
+          for (j in 1:length(nSigma_2)) {
+            mYnew[j, i] <- rnorm(1, mTheta[j, ] %*% dfX[i, ], nSigma_2[j])
+          }
+        }
+        mYnew
+      }
+    
+  ),
+  
+  active = list(
+    
+    create_plot = function() {
+      ## plots
+      self$plot_intervals <- bayesplot::mcmc_intervals(self$beta_coef)
+      self$plot_areas <- bayesplot::mcmc_areas(
+                  self$beta_coef,
+                  prob = 0.8, # 80% intervals
+                  prob_outer = 0.99, # 99%
+                  point_est = "mean"
+                )
+      self$plot_hist <- bayesplot::mcmc_hist(self$beta_coef)
+      self$plot_dens <- bayesplot::mcmc_dens(self$beta_coef)
+    }
+  )
+  
+)
+```

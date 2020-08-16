@@ -1,0 +1,21 @@
+Version: 1.0
+
+RestoreWorkspace: Default
+SaveWorkspace: Default
+AlwaysSaveHistory: Default
+
+EnableCodeIndexing: Yes
+UseSpacesForTab: Yes
+NumSpacesForTab: 6
+Encoding: UTF-8
+
+RnwWeave: Sweave
+LaTeX: pdfLaTeX
+
+AutoAppendNewline: Yes
+StripTrailingWhitespace: Yes
+
+BuildType: Package
+PackageUseDevtools: Yes
+PackageInstallArgs: -v && make -C midasExper && Rscript -e "devtools::install('midasExper', dependencies = FALSE, upgrade_dependencies = FALSE, keep_source=T)" && Rscript -e "devtools::document('midasExper')"
+PackageRoxygenize: rd,collate,namespace

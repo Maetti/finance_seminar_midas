@@ -1,0 +1,303 @@
+---
+title: "fun-03_numerical_example"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{fun-03_numerical_example}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+```{r setup}
+library(rstan)
+parallel::detectCores()
+options(mc.cores = 4)
+```
+
+# Create Data
+```{r}
+## data generating process
+vBeta <- c(0, 0.4, 1.2, 0, 0, 0.8, 1, 0, 0, 0)
+nY <- 500
+nF <- 3
+nL <- 12
+nP <- 3
+nX <- length(vBeta)
+mX <- matrix(rnorm((nY * nL + nF) * nX), ncol = nX, nrow = nY * nL + nF)
+
+lX_align <- dgp_pred_align(nY, mX, nF, nL)
+
+mX_almon <- dgp_pred_all_weighted(nY, lX_align, nL, 0.1, -0.15)
+
+mY <- mX_almon %*% vBeta + rnorm(nY)
+
+
+mQ <- dgp_lag_matrix(nF, nL, .bEndpoint = FALSE)
+
+
+```
+
+## Check data with linear regression
+
+### with known almon lag
+```{r}
+dfNew <- cbind(mY, mX_almon)
+dfNew <- as.data.frame(dfNew)
+colnames(dfNew)[1] <- "y"
+m1 <- lm(y ~ . - 1, data = dfNew)
+summary(m1)
+```
+
+### unknown almon lag
+
+```{r}
+mQ <- dgp_lag_matrix(3, 12, .bEndpoint = FALSE)
+dfDataX <- lapply(lX_align, function(x, mQ) {x %*% t(mQ)}, mQ = mQ)
+dfDataX <- do.call("cbind", dfDataX)
+dfNew2 <- cbind(mY, dfDataX)
+dfNew2 <- as.data.frame(dfNew2)
+colnames(dfNew2)[1] <- "y"
+m2 <- lm(y ~ . -1, data = dfNew2)
+summary(m2)
+
+## obtaining the beta coefficient
+vBeta_est <- m2$coefficients
+maCoef <- matrix(0, nrow = nX, ncol = 1)
+vInd <- c(seq(1, ncol(dfDataX), 4), ncol(dfDataX) + 1)
+for (i in 1:nX) {
+  maCoef[i, ] <- sum(vBeta_est[vInd[i]:(vInd[i+1] - 1)] %*% mQ)
+}
+```
+
+# Stan Models
+
+```{r}
+gSize <- c(rep(4, 10))
+
+lData_stan_raw <- list(
+  nY = nY,
+  nK = ncol(dfDataX),
+  nG = nX,
+  y = as.vector(mY),
+  x = dfDataX,
+  gSize = gSize,
+  gInd = rep(1:10, gSize),
+  pr_sigma = c(2, 0.1)
+)
+```
+
+
+```{r}
+midas_model <- R6::R6Class(classname = "bayes_midas", 
+  
+  public = list(
+    
+    ## input
+    vBeta = NULL,
+    nY = NULL,
+    nF = NULL,
+    nL = NULL,
+    nP = NULL,
+    nX = NULL,
+    mX = NULL,
+    lX_align = NULL,
+    mX_almon = NULL,
+    mY = NULL,
+    mQ = NULL,
+    
+    ## stan input
+    lData = NULL,
+    stan_model = NULL,
+    list_of_draws = NULL,
+    fit_summary = NULL,
+    beta_coef = NULL,
+    
+    ## enter data
+    initialize = function(vBeta = c(0, 0.4, 1.2, 0, 0, 0.8, 1, 0, 0, 0), nY = 500, nF = 3, nL = 12, nP = 3) {
+      
+      self$Beta <- vBeta
+      self$nY <- nY
+      self$nF <- nF
+      self$nL <- nL
+      self$nP <- nP
+      self$nX = length(self$vBeta)
+      self$mX = matrix(rnorm((self$nY * self$nL + self$nF) * self$nX), ncol = self$nX, nrow = self$nY * self$nL + self$nF)
+      self$lX_align <- dgp_pred_align(self$nY, self$mX, self$nF, self$nL)
+      self$mX_almon <- dgp_pred_all_weighted(self$nY, self$lX_align, self$nL, 0.1, -0.15)
+      self$mY <- self$mX_almon %*% self$vBeta + rnorm(self$nY)
+      self$mQ <- dgp_lag_matrix(self$nF, self$nL, .bEndpoint = FALSE)
+      
+
+      
+    },
+    
+    ## fit the model
+    fit_stan = function(sFile, sName, nIter = 2000, ...) {
+      
+      ## fit the stan model
+      obFit <- rstan::stan(file = sFile, model_name = sName, data = self$lData, iter = nIter, ...)
+      
+      ## extract usefull information
+      self$stan_model <- obFit
+      self$list_of_draws <- extract(obFit)
+      self$fit_summary <- summary(obFit)
+      
+      ## compute beta coefficient
+      cat("Computing Beta Coefficient")
+    },
+    
+    ## plot output
+    plot_beta = function() {
+      
+      nX <- self$lData$nG
+      dfDataX <- self$lData$x
+      
+      dfTheta_sim <- self$list_of_draws$theta
+      maCoef <- matrix(0, nrow = nrow(dfTheta_sim), ncol = nX)
+      vInd <- c(seq(1, ncol(dfDataX), 4), ncol(dfDataX) + 1)
+      
+      for (i in 1:nX) {
+        vB <- dfTheta_sim[, vInd[i]:(vInd[i+1] - 1)]
+        maCoef[, i] <- apply(vB, 1, function(x, mQ) {sum(x %*% mQ)}, mQ = mQ)
+      }
+      
+      self$beta_coef <- maCoef
+      
+      x11();
+      par(mfrow=c(4, 3))
+      for (i in 1:nX) {
+        plot(density(maCoef[, i]), #xlim = c(-3, 3),
+          main = paste0("Beta ", i, " (", vBeta[i], ")"))
+        abline(v = mean(maCoef[, i]), col = "red")
+      }
+      
+    }
+    
+  )
+  
+  
+)
+```
+
+```{r}
+md_base_midas <- midas_model$new(lData_stan_gLasso)
+md_gLasso$fit_stan(sFile = here::here("inst/stan/adaptive_group_lasso.stan"), sName = "group_lasso", nIter = 2000)
+nTheta <- md_gLasso$list_of_draws$theta
+
+```
+
+
+
+
+## Adaptive Group Lasso
+```{r}
+lData_stan_gLasso <- lData_stan_raw 
+lData_stan_gLasso$pr_lamba <- c(2, 0.1)
+```
+
+
+```{r}
+md_stan_gLasso <- rstan::stan(file = here::here("inst/stan/adaptive_group_lasso.stan"), 
+                              model_name = "group_lasso", data = lData_stan_gLasso, iter = 2000)
+
+midas_model$fit_stan()
+md_stan_gLasso
+```
+
+## Adaptive Group Lasso with Spike & Slap
+
+```{r}
+lData_stan_gLasso_ss <- lData_stan_raw 
+lData_stan_gLasso_ss$pr_lamba <- c(2, 0.1)
+```
+
+
+```{r}
+md_stan_gLasso_ss <- rstan::stan(file = here::here("inst/stan/adaptive_group_lasso_ss.stan"), 
+                      model_name = "group_lasso_ss", data = lData_stan_gLasso_ss, iter = 2000)
+md_stan_gLasso_ss
+```
+
+
+```{r}
+list_of_draws <- extract(md_stan_gLasso)
+print(names(list_of_draws))
+
+df_of_draws <- as.data.frame(fTest)
+print(colnames(df_of_draws))
+
+fit_summary <- summary(fTest)
+print(names(fit_summary))
+```
+
+```{r}
+dfMean <- get_posterior_mean(fTest)
+```
+
+
+```{r}
+sampler_params <- get_sampler_params(fTest, inc_warmup = FALSE)
+sampler_params_chain1 <- sampler_params[[1]]
+
+print(get_elapsed_time(fTest))
+```
+
+
+```{r}
+dfTheta_sim <- list_of_draws$beta
+```
+
+
+```{r}
+dfTheta_sim <- list_of_draws$theta
+maCoef <- matrix(0, nrow = nrow(dfTheta_sim), ncol = nX)
+vInd <- c(seq(1, ncol(dfDataX), 4), ncol(dfDataX) + 1)
+
+for (i in 1:nX) {
+  vB <- dfTheta_sim[, vInd[i]:(vInd[i+1] - 1)]
+  maCoef[, i] <- apply(vB, 1, function(x, mQ) {sum(x %*% mQ)}, mQ = mQ)
+}
+
+dev.off()
+x11()
+par(mfrow=c(4, 3))
+for (i in 1:nX) {
+  plot(density(maCoef[, i]), #xlim = c(-3, 3),
+    main = paste0("Beta ", i, " (", vBeta[i], ")"))
+  abline(v = mean(maCoef[, i]), col = "red")
+}
+```
+
+
+
+## Hierarchical Group Lassos
+
+```{r}
+gSize <- c(rep(4, 10))
+
+lData_stan_gglasso_hier <- list(
+  nY = nY,
+  nX = ncol(dfDataX),
+  nG = nK,
+  y = as.vector(mY),
+  x = dfDataX,
+  gSize = gSize,
+  gInd = rep(1:10, gSize),
+  pr_sigma = c(2, 0.1),
+)
+```
+
+
+```{r}
+st_ggLasso_hier <- rstan::stan(file = here::here("inst/stan/group_lasso_hierarchical"), 
+                      model_name = "group_lasso_hierarchical", data = lData_stan_gglasso_hier, iter = 2000)
+st_ggLasso_hier
+```
+

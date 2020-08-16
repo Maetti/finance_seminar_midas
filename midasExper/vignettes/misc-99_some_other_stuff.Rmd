@@ -1,0 +1,189 @@
+---
+title: "misc-99_some_other_stuff"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{misc-99_some_other_stuff}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(midasExper)
+```
+
+```{r}
+lData_sgl <- list("x" = dfDataX, "y" = mY)
+md_sgLasso = SGL::SGL(lData_sgl, sGroup, type = "linear", standardize = F)
+
+vBeta_sgl <- md_sgLasso$beta[, 20]
+maCoef_sgl <- matrix(0, nrow = nK, ncol = 1)
+vInd <- c(seq(1, ncol(dfDataX), 4), ncol(dfDataX) + 1)
+for (i in 1:nK) {
+  maCoef_sgl[i, ] <- sum(vBeta_sgl[vInd[i]:(vInd[i+1] - 1)] %*% mQ)
+}
+```
+
+```{r}
+# d=data.frame(y=1:100,x1=runif(100)+10,x2=rnorm(100)+10)
+# d$y=1+ 2 * d$x1 + 3*d$x2 ##easy coef 1 2 3
+# d0=d
+# m=lm(y~.,d0)
+# coef(m) #are 1 2 3
+# 
+# d[, c(2, 3)]=as.data.frame(scale(d[, c(2, 3)]))
+# d[, 1] <- d[, 1] - mean(d[, 1])
+# m=lm(y~.,d)
+# coef(m)
+# coef(m)['x1']/sd(d0[['x1']]) #nicely back to 2
+# coef(m)['x2']/sd(d0[['x2']]) #nicely back to 3
+```
+
+
+
+```{r}
+## fit the stan model
+obFit <- rstan::stan(file = here::here("inst/stan/adaptive_group_lasso.stan"), data = lData_stan_raw, model_name = "group_lasso")
+
+list_of_draws <- extract(obFit)
+fit_summary <- summary(obFit)
+
+## compute beta coefficient
+cat("Computing Beta Coefficient")
+
+nX <- lData_stan_raw$nG
+dfDataX <- lData_stan_raw$x
+nP <- lData_stan_raw$gSize[[1]]
+
+
+dfTheta_sim <- list_of_draws$theta
+
+## unstandardized theat
+sdX <- attr(dfDataX, "scaled:scale")
+dfTheta_sim_unstd <- t(t(dfTheta_sim) / sdX)
+
+## get weights and coefficient
+lWeights <- vector("list", length = nX)
+maWeigths <- matrix(0, nrow = nrow(dfTheta_sim), ncol = ncol(mQ))
+maCoef <- matrix(0, nrow = nrow(dfTheta_sim), ncol = nX)
+vInd <- c(seq(1, ncol(dfDataX), nP), ncol(dfDataX) + 1)
+
+for (i in 1:nX) {
+  vB <- dfTheta_sim_unstd[, vInd[i]:(vInd[i+1] - 1)]
+  maWeigths <- t(apply(vB, 1, function(x, mQ) {x %*% mQ}, mQ = mQ))
+  maCoef[, i] <- apply(maWeigths, 1, sum)
+  lWeights[[i]] <- maWeigths / maCoef[, i]
+  colnames(lWeights[[i]]) <- paste0("weight_", 1:ncol(mQ))
+}
+
+self$beta_coef <- maCoef
+colnames(self$beta_coef) <- paste0("Beta_", 1:nX)
+names(lWeights) <- paste0("covariate_", 1:nX)
+self$lWeights
+```
+
+
+
+
+## Weight plot
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidybayes)
+
+md_base_midas$list_of_draws$yrep
+
+## weight plot
+sTest <- 
+  md_gLasso$lWeights[[5]] %>% 
+    as.data.frame() %>%
+    tidyr::pivot_longer(names_to = "input", values_to = "val", col = 1:12) %>% 
+    dplyr::mutate(input = factor(input, levels = colnames(md_gLasso$lWeights[[1]])))
+
+ggplot(data = sTest, aes(x = input, y = val)) +
+  stat_lineribbon(.width = c(.99, .95, .8, .5), color = "#08519C") +
+  scale_fill_brewer()
+
+
+dt_1 <- data_frame(x = 1:10) %>%
+        group_by_all() %>%
+        do(data_frame(y = rnorm(100, .$x))) %>%
+        ungroup()
+
+dt_2 <- data_frame(x = 1:10) %>%
+  group_by_all() %>%
+  do(data_frame(y = rnorm(100, .$x) - 1.5)) %>%
+  ungroup()
+
+ggplot() +
+  stat_lineribbon(data = dt_1, aes(x = x, y = y), .width = c(.99, .95, .8, .5), color = "#08519C") + 
+  scale_fill_brewer()
+```
+
+
+
+
+## prediction with new data
+```{r}
+mTheta <- md_base_midas$list_of_draws$theta
+nSigma_2 <- md_base_midas$list_of_draws$sigma_2
+xTest_scale <- scale(dfDataX_test, center = T, scale = T)
+
+## set theta to 0
+mTheta <- mTheta[, 1:36]
+xTest_scale <- xTest_scale[, 1:36]
+
+# pred <- stan(file = here::here("inst/stan/prediction_new_y.stan"),
+#              data = list(N = nrow(xTest_scale), 
+#                          K = ncol(xTest_scale), 
+#                          N_samples = 4000,
+#                          x_test = xTest_scale,
+#                          theta = mTheta,
+#                          sigma_2 = nSigma_2),
+#              chains = 1, iter = 1,
+#              algorithm = "Fixed_param")
+
+# Extract and format output
+ext_pred <- extract(pred)
+out_mat <- matrix(NA, nrow = dim(ext_pred$y_test)[2],
+                  ncol = dim(ext_pred$y_test)[3])
+for(i in 1:dim(ext_pred$y_test)[2]) {
+  for(j in 1:dim(ext_pred$y_test)[3]) {
+    out_mat[i, j] <- mean(ext_pred$y_test[, i, j])
+  }
+}
+# Accuracy
+(apply(out_mat, 2, median) %>% round(0) == y_test) %>% mean()
+```
+
+```{r}
+gen_pred_y <- function(dfX, mTheta, nSigma_2) {
+  
+  mYnew <- matrix(nrow = length(nSigma_2), ncol = nrow(dfX))
+  
+  for (i in 1:nrow(dfX)) {
+    for (j in 1:length(nSigma_2)) {
+      mYnew[j, i] <- rnorm(1, mTheta[j, ] %*% dfX[i, ], nSigma_2[j])
+    }
+  }
+  mYnew
+}
+
+mY_new <- gen_pred_y(xTest_scale, mTheta, nSigma_2)
+colnames(mY_new) <- paste0("y_", 1:50)
+
+mY_new_summary <- 
+  foo_summary(mY_new) %>% 
+  dplyr::mutate(true_y = mY_test[, 1]) %>% 
+  dplyr::select(input, true_y, dplyr::everything())
+
+sum((mY_new_summary$true_y - mY_new_summary$mean)^2)/50
+```
+
+

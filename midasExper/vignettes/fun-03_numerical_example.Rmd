@@ -1,0 +1,236 @@
+---
+title: "fun-03_numerical_example"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{fun-03_numerical_example}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+```{r setup}
+library(rstan)
+parallel::detectCores()
+options(mc.cores = 4)
+```
+
+# Create Data
+```{r}
+## data generating process
+vBeta <- c(0, 0.4, 1.2, 0, 0, 0.8, 1, 0, 0, 0)
+nY <- 500
+nF <- 3
+nL <- 12
+nP <- 3
+nX <- length(vBeta)
+mX <- matrix(rnorm((nY * nL + nF) * nX), ncol = nX, nrow = nY * nL + nF)
+
+lX_align <- dgp_pred_align(nY, mX, nF, nL)
+
+mX_almon <- dgp_pred_all_weighted(nY, lX_align, nL, 0.1, -0.15)
+
+mY <- mX_almon %*% vBeta + rnorm(nY)
+```
+
+## Check data with linear regression
+
+### with known almon lag
+```{r}
+dfNew <- cbind(mY, mX_almon)
+dfNew <- as.data.frame(dfNew)
+colnames(dfNew)[1] <- "y"
+m1 <- lm(y ~ . - 1, data = dfNew)
+summary(m1)
+```
+
+### unknown almon lag
+
+```{r}
+mQ <- dgp_lag_matrix(3, 12, .bEndpoint = FALSE)
+dfDataX <- lapply(lX_align, function(x, mQ) {x %*% t(mQ)}, mQ = mQ)
+dfDataX <- do.call("cbind", dfDataX)
+dfNew2 <- cbind(mY, dfDataX)
+dfNew2 <- as.data.frame(dfNew2)
+colnames(dfNew2)[1] <- "y"
+m2 <- lm(y ~ . -1, data = dfNew2)
+summary(m2)
+
+## obtaining the beta coefficient
+vBeta_est <- m2$coefficients
+maCoef <- matrix(0, nrow = nX, ncol = 1)
+vInd <- c(seq(1, ncol(dfDataX), 4), ncol(dfDataX) + 1)
+for (i in 1:nX) {
+  maCoef[i, ] <- sum(vBeta_est[vInd[i]:(vInd[i+1] - 1)] %*% mQ)
+}
+
+## try to get almon weights
+i <- 3
+sW <- vBeta_est[vInd[i]:(vInd[i+1] - 1)] %*% mQ
+
+sA <- sW / sum(sW)
+```
+
+# Stan Models
+
+```{r}
+gSize <- c(rep(4, 10))
+
+lData_stan_raw <- list(
+  nY = nY,
+  nZ = ncol(dfDataX),
+  nG = nX,
+  y = as.vector(mY),
+  x = dfDataX,
+  gSize = gSize,
+  gInd = rep(1:10, gSize),
+  pr_sigma = c(2, 0.1),
+  pr_lambda = c(2, 0.1)
+)
+
+
+mQ <- dgp_lag_matrix(nF, nL, .bEndpoint = FALSE)
+```
+
+
+```{r}
+midas_model <- R6::R6Class(classname = "bayes_midas", 
+  
+  public = list(
+    
+    ## data input
+    lData = NULL,
+    mQ = NULL,
+    
+    ## stan input
+    stan_model = NULL,
+    list_of_draws = NULL,
+    fit_summary = NULL,
+    beta_coef = NULL,
+    
+    ## plots
+    plot_intervals = NULL,
+    plot_areas = NULL,
+    plot_hist = NULL,
+    plot_dens = NULL,
+    
+    ## enter data
+    initialize = function(lData, mQ) {
+      self$lData <- lData
+      self$mQ <- mQ
+    },
+    
+    ## fit the model
+    fit_stan = function(sFile, sName, nIter = 2000, ...) {
+      
+      ## fit the stan model
+      obFit <- rstan::stan(file = sFile, model_name = sName, data = self$lData, iter = nIter, ...)
+      
+      ## extract usefull information
+      self$stan_model <- obFit
+      self$list_of_draws <- extract(obFit)
+      self$fit_summary <- summary(obFit)
+      
+      ## compute beta coefficient
+      cat("Computing Beta Coefficient")
+      
+      nX <- self$lData$nG
+      dfDataX <- self$lData$x
+      nP <- self$lData$gSize[[1]]
+      
+      dfTheta_sim <- self$list_of_draws$theta
+      maCoef <- matrix(0, nrow = nrow(dfTheta_sim), ncol = nX)
+      vInd <- c(seq(1, ncol(dfDataX), nP), ncol(dfDataX) + 1)
+      
+      for (i in 1:nX) {
+        vB <- dfTheta_sim[, vInd[i]:(vInd[i+1] - 1)]
+        maCoef[, i] <- apply(vB, 1, function(x, mQ) {sum(x %*% mQ)}, mQ = mQ)
+      }
+      
+      self$beta_coef <- maCoef
+      colnames(self$beta_coef) <- paste0("Beta_", 1:nX)
+    },
+    
+    save_stan_fit = function(sPath) {
+      saveRDS(object = self$stan_model, file = sPath)
+    }
+  ),
+  
+  active = list(
+    
+    create_plot = function() {
+      ## plots
+      self$plot_intervals <- bayesplot::mcmc_intervals(self$beta_coef)
+      self$plot_areas <- bayesplot::mcmc_areas(
+                  self$beta_coef,
+                  prob = 0.8, # 80% intervals
+                  prob_outer = 0.99, # 99%
+                  point_est = "mean"
+                )
+      self$plot_hist <- bayesplot::mcmc_hist(self$beta_coef)
+      self$plot_dens <- bayesplot::mcmc_dens(self$beta_coef)
+    }
+  )
+  
+)
+```
+
+
+
+```{r}
+md_base_midas <- midas_model$new(lData_stan_raw, mQ)
+
+## adaptive group lasso
+md_base_midas$fit_stan(sFile = here::here("inst/stan/adaptive_group_lasso.stan"), sName = "group_lasso", nIter = 20000)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/adaptive_group_lasso.rds"))
+md_base_midas$create_plot()
+
+md_gLasso <- md_base_midas$clone()
+x11(); md_gLasso$plot_areas
+
+## adaptive group lasso s&s
+md_base_midas$fit_stan(sFile = here::here("inst/stan/adaptive_group_lasso_ss.stan"), sName = "group_lasso_ss", nIter = 20000)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/adaptive_group_lasso_ss.rds"))
+md_base_midas$create_plot()
+
+md_gLasso_ss <- md_base_midas$clone()
+x11(); md_gLasso_ss$plot_areas
+
+
+## hierarchical group lasso
+md_base_midas$fit_stan(sFile = here::here("inst/stan/group_lasso_hierarchical.stan"), sName = "group_lasso_hierarchical", nIter = 20000)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/group_lasso_hierarchical.rds"))
+md_base_midas$create_plot()
+
+md_hierarchical_group <- md_base_midas$clone()
+x11(); md_hierarchical_group$plot_areas
+
+## horseshoe group
+md_base_midas$fit_stan(sFile = here::here("inst/stan/horseshoe_group.stan"), sName = "group_horseshoe", nIter = 20000)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/horseshoe_group.rds"))
+md_base_midas$create_plot()
+
+md_horseshoe <- md_base_midas$clone()
+x11(); md_horseshoe$plot_areas
+
+## horseshoe+ group
+md_base_midas$fit_stan(sFile = here::here("inst/stan/horseshoe_group_plus.stan"), sName = "group_horseshoe_plus", nIter = 20000)
+md_base_midas$save_stan_fit(sPath = here::here("inst/data/horseshoe_group_plus.rds"))
+md_base_midas$create_plot()
+
+md_horseshoe_plus <- md_base_midas$clone()
+x11(); md_horseshoe_plus$plot_areas
+```
+
+
+
+
+
+#   ____________________________________________________________________________
+
